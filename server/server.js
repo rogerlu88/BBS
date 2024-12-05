@@ -5,36 +5,69 @@ const WebSocket = require("ws");
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server: server });
-const messages = [];
+
+// Store messages by topic
+const topicMessages = new Map();
+// Store client subscriptions
+const clientTopics = new Map();
+
 wss.on("connection", (ws) => {
   console.log("Client connected");
-  ws.once("open", () => {
-    console.log("Connected to websocket");
-    ws.send(JSON.stringify({ type: "join", data: messages }));
-  });
+
   ws.on("message", (messageString) => {
     console.log("Message received", messageString);
-    const json = JSON.parse(messageString);
-    const { message } = json;
-    messages.push({ message });
+    const data = JSON.parse(messageString);
 
-    wss.clients.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify({ message }));
+    if (data.type === "join") {
+      // Handle joining a topic
+      const topic = data.topic;
+      if (!clientTopics.has(ws)) {
+        clientTopics.set(ws, new Set());
       }
-    });
+      clientTopics.get(ws).add(topic);
+
+      // Initialize topic if it doesn't exist
+      if (!topicMessages.has(topic)) {
+        topicMessages.set(topic, []);
+      }
+
+      // Send existing messages for this topic to the client
+      ws.send(JSON.stringify({
+        type: "history",
+        topic: topic,
+        messages: topicMessages.get(topic)
+      }));
+
+      console.log(`Client joined topic: ${topic}`);
+    } 
+    else if (data.type === "message") {
+      // Handle new message
+      const { topic, message } = data;
+      if (!topicMessages.has(topic)) {
+        topicMessages.set(topic, []);
+      }
+      
+      const messageData = { message, timestamp: new Date().toISOString() };
+      topicMessages.get(topic).push(messageData);
+
+      // Broadcast to all clients subscribed to this topic
+      wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN && clientTopics.get(client)?.has(topic)) {
+          client.send(JSON.stringify({
+            type: "message",
+            topic: topic,
+            data: messageData
+          }));
+        }
+      });
+    }
   });
 
   ws.on("close", () => {
     console.log("Client disconnected");
-    wss.clients.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify({ type: "join", data: messages }));
-      }
-    });
+    // Clean up client subscriptions
+    clientTopics.delete(ws);
   });
-
-  ws.send(JSON.stringify({ message: "Hello from server" }));
 });
 
 server.listen(8080, () => {
